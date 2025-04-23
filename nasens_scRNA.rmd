@@ -1,0 +1,282 @@
+---
+title: "nasens_scRNA.rmd"
+output: html_document
+date: "2025-03-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r loading libs}
+library(spatstat.explore)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(harmony)
+library(tidyverse)
+```
+
+```{r load integrated data}
+emtab_harmony<- readRDS("/ix/djishnu/Suhana/outs/emtab_harmony.rds")
+sdrf_df=read.csv("/ix/djishnu/Suhana/E-MTAB-12051.sdrf.txt",header=T, sep ="\t")
+```
+
+
+
+```{r create data frame of disease to orig.ident}
+disease_df <- sdrf_df[,c("Characteristics.disease.","Assay.Name")]
+
+disease_df$Assay.Name<-gsub('sc5r','',disease_df$Assay.Name)
+disease_df$Assay.Name<-gsub('_.*$','',disease_df$Assay.Name)
+names(disease_df)[names(disease_df) == "Assay.Name"] <- "orig.ident"
+disease_df<- disease_df[!duplicated(disease_df), ]
+
+####. create new meta #####
+new_meta<-emtab_harmony@meta.data
+new_meta <- new_meta[-c(2,3,4,5,6)]
+new_meta$rownames <- rownames(new_meta)
+new_meta <- merge(new_meta, disease_df)
+rownames(new_meta) <- new_meta$rownames
+new_meta <- new_meta[-c(1,2)]
+
+emtab_harmony<-AddMetaData(emtab_harmony, new_meta, col.name='Disease_Type')
+harmony.merge.plt<-DimPlot(emtab_harmony,reduction="umap",group.by=c("Disease_Type","seurat_clusters"))
+harmony.merge.plt
+ggsave(file= "/ix/djishnu/Trirupa/ABomics.Prj/SigmiR/outputs/umap_PostHarmony.pdf", harmony.merge.plt, height=6,width=14)
+```
+
+``` {r cluster annotation}
+dsa.markers <- FindAllMarkers(emtab_harmony, only.pos = TRUE)
+dsa.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+```
+
+```{r}
+# Return top 10 markers for cluster specified 'x'
+gen_marker_table <- function(x){
+  dsa.markers[dsa.markers$cluster == x, ] %>%
+  head(n=20)
+}
+
+# Create a data frame of results for clusters 
+top20_markers <- map_dfr(0:18, gen_marker_table)
+best_custom_dsa= emtab_harmony
+##### THIS IS JUST A MANUAL ANNOTTATION BASED ON THE MARKER GENES ############
+new.cluster.ids <- c("Proximal Tubule", "Proximal Tubule", "Proximal Tubule", "CD4+ T Cell", "CD8+ T Cell", "ECg", "Proximal Tubule", "NK Cell", "Proximal Tubule","Macrophage","Collecting Duct Cell","Thin Ascending Limb Cell", "Glomerular Mesangial Cell","B and Plasma Cell","Intercalated Cell", " Indistinct Epithelial Cell", "Proximal Tubule", "Progenitor Cell", "Glomerular Cell" ) ## based on Suhana's script that gives Annot_Final.rds
+names(new.cluster.ids) <- levels(best_custom_dsa)
+best_custom_dsa<- RenameIdents(best_custom_dsa, new.cluster.ids)
+DimPlot(best_custom_dsa, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+#lets add the idents into the metadata
+best_custom_dsa$CellType <- Idents(best_custom_dsa)
+
+#saveRDS(best_custom_dsa, file="outs/Annot_Final.rds")
+```
+```{r subsetting and re-clustering B and T cell populations}
+B_T_cells <- subset(best_custom_dsa, idents = c("B and Plasma Cell", "CD4+ T Cell", "CD8+ T Cell"))
+## re-run clustering 
+B_T_cells <- FindVariableFeatures(B_T_cells, selection.method = "vst", nfeatures = 2000)
+B_T_cells <- ScaleData(B_T_cells)
+B_T_cells <- RunPCA(B_T_cells)
+B_T_cells <- FindNeighbors(B_T_cells, dims = 1:20)
+B_T_cells <- FindClusters(B_T_cells, resolution = 0.5)
+B_T_cells <- RunUMAP(B_T_cells, dims = 1:20)
+DimPlot(B_T_cells, reduction = "umap", label = TRUE)
+
+
+avg_marker_exp= AverageExpression(B_T_cells, features = c(
+  "CD4","GATA3","RORC", ## CD4 T 
+  "MS4A1", "CD19", "CD79A", "PAX5","XBP1", "PRDM1",  ## B cell
+  "CD8A", "CD8B","GZMB", "PRF1", "GNLY" ## CD8 T
+))$RNA
+
+avg_marker_exp.df= as.data.frame(as.matrix(avg_marker_exp))
+
+marker_list <- lapply(colnames(avg_marker_exp.df), function(x) {
+  rownames(avg_marker_exp.df[avg_marker_exp.df[[x]] > 0.8, ])
+})
+
+names(marker_list) <- colnames(avg_marker_exp.df)
+#marker_list
+```
+
+```{r Assigning new subtypes and updating metadata}
+new.bt.ids <- c(
+  "CD4+ T Cell",     # g0
+  "CD8+ T Cell",     # g1
+  "CD8+ T Cell",     # g2
+  "CD8+ T Cell",     # g3
+  "CD8+ T Cell",     # g4
+  "CD8+ T Cell",     # g5
+  "CD8+ T Cell",     # g6
+  "CD8+ T Cell",     # g7
+  "CD8+ T Cell",     # g8
+  "CD8+ T Cell",     # g9
+  "B Cell",          # g10
+  "B Cell",          # g11
+  "CD4+ T Cell",     # g12
+  "CD4+ T Cell",     # g13
+  "B Cell"      # g14
+)
+names(new.bt.ids) <- levels(B_T_cells)
+
+B_T_cells <- RenameIdents(B_T_cells, new.bt.ids)
+B_T_cells$Refined_CellType <- Idents(B_T_cells)
+DimPlot(B_T_cells, label = TRUE)
+
+#saveRDS(B_T_cells, file="/ix/djishnu/Trirupa/CHERUKURI/output_ref27mar25/Seurat_for_RCTD_reference.onlyBandT.v3.rds")
+## updating original dataset
+refined_annotations <- B_T_cells$Refined_CellType
+best_custom_dsa$Refined_CellType <- NA  # create a column first
+best_custom_dsa$Refined_CellType[names(refined_annotations)] <- as.character(refined_annotations)
+best_custom_dsa$Refined_CellType = ifelse(
+  is.na(best_custom_dsa$Refined_CellType),
+  as.character(best_custom_dsa$CellType),
+  as.character(best_custom_dsa$Refined_CellType)
+)
+
+
+umap_plt=DimPlot(best_custom_dsa, group.by= "Refined_CellType",reduction= "umap",label = TRUE, pt.size= 0.5) 
+
+B_T_subset.v2= subset(best_custom_dsa, subset= Refined_CellType %in% c("B Cell", "CD4+ T Cell", "CD8+ T Cell"))
+saveRDS(B_T_subset.v2, file="/ix/djishnu/Trirupa/CHERUKURI/output_ref27mar25/Seurat_for_RCTD_reference.onlyBandT.v2.rds")
+#ggsave("/ix/djishnu/Trirupa/ABomics.Prj/SigmiR/outputs/Refined_CellTypes_naesens_UMAP.27mar025.pdf",umap_plt, width=8, height= 6)
+
+#saveRDS(best_custom_dsa, file= "/ix/djishnu/Trirupa/ABomics.Prj/SigmiR/outputs/naessens_allgrps.annot.27mar25.rds")
+```
+
+```{r making the refined scRNAseq object lighter }
+# 1. Keep only the RNA assay (or the relevant assay used for counts)
+light_obj <- best_custom_dsa
+DefaultAssay(light_obj) <- "RNA"
+light_obj <- subset(light_obj, features = VariableFeatures(light_obj))  # Optional: only HVGs
+
+# 2. Drop unnecessary slots
+light_obj@assays$RNA@scale.data <- matrix(0, 0, 0)  # Or just NULL
+light_obj@assays$RNA@var.features <- character(0)
+light_obj@assays$RNA@meta.features <- data.frame()
+
+light_obj@reductions <- list()     # Remove PCA, UMAP, Harmony, etc.
+light_obj@graphs <- list()
+light_obj@neighbors <- list()
+light_obj@misc <- list()
+light_obj@tools <- list()
+light_obj@commands <- list()
+light_obj@images <- list()
+
+# 3. Optionally keep only metadata columns needed (e.g., cell types)
+light_obj@meta.data <- light_obj@meta.data[, c("orig.ident","nCount_RNA","nFeature_RNA","seurat_clusters",
+                                               "Disease_Type","Refined_CellType")]
+
+# 4. Save lighter object
+saveRDS(light_obj, file = "/ix/djishnu/Trirupa/CHERUKURI/output_ref27mar25/Seurat_for_RCTD_reference2Apr25.light.rds")
+```
+
+```{r Removing the cell types with low numbers}
+
+full_lite= readRDS("/ix/djishnu/Trirupa/CHERUKURI/output_ref27mar25/Seurat_for_RCTD_reference2Apr25.light.rds")
+celltypes_to_remove= c("Indistinct Epithelial Cell","Intercalated Cell","Glomerular Cell","Progenitor Cell")
+cells_to_keep= rownames(full_lite@meta.data[!full_lite@meta.data$Refined_CellType %in% celltypes_to_remove,])
+sub_lite= subset(full_lite, cells=cells_to_keep)
+Idents(sub_lite) <- sub_lite@meta.data$Refined_CellType
+saveRDS(sub_lite, file= "/ix/djishnu/Trirupa/CHERUKURI/output_ref27mar25/Seurat_for_RCTD_reference4Apr25.light.rds")
+```
+
+```{r keeping only slots that will be used for deconvolution using RCTD} 
+###########################################################################################################################
+############################################# THIS CHUNK WAS NOT USED EVENTUALLY #############################################
+############################################################################################################################
+# Set default assay
+DefaultAssay(best_custom_dsa) <- "RNA"
+counts <- GetAssayData(best_custom_dsa, assay = "RNA", slot = "counts")
+# Extract only required metadata
+meta <- best_custom_dsa@meta.data[, c("Refined_CellType", "orig.ident", "Disease_Type", "seurat_clusters")]
+
+# Create a new minimal Seurat object with raw counts and metadata
+seurat_obj <- CreateSeuratObject(counts = counts, meta.data = meta)
+Idents(seurat_obj) = "Refined_CellType"
+# Save cleaned reference object for RCTD
+saveRDS(seurat_obj, file = "/ix/djishnu/Trirupa/CHERUKURI/output_ref27mar25/Seurat_for_RCTD_reference.rds")
+### subsetting and saving only the B and T cells
+B_T_subset= subset(seurat_obj, subset= Refined_CellType %in% c("B Cell", "CD4+ T Cell", "CD8+ T Cell"))
+# Pull the counts matrix and coerce to sparse matrix (if it's not already)
+#counts <- as(GetAssayData(B_T_subset, assay = "RNA", slot = "counts"), "dgCMatrix")
+counts <- GetAssayData(B_T_subset, assay = "RNA", slot = "counts")
+rownames(counts)[1:5]  # Should show gene names
+
+
+saveRDS(B_T_subset, file="/ix/djishnu/Trirupa/CHERUKURI/output_ref27mar25/Seurat_for_RCTD_reference.onlyBandT.rds")
+
+```
+
+```{r calculating DEGs}
+B_cells= subset(best_custom_dsa, subset= Refined_CellType== "B Cell")
+table(B_cells$Disease_Type) ## ABMR = 25 cells and DSA+AbMR- = 239 , TCMR = 11
+Idents(B_cells) = B_cells$Disease_Type
+
+### ABMR vs DSA
+abmr_vs_dsa <- subset(B_cells, subset = Disease_Type %in% c("Antibody-mediated rejection", "Non rejection DSA+"))
+
+Bcell.abmr_vs_dsa= FindMarkers(abmr_vs_dsa, ident.1 = "Antibody-mediated rejection", ident.2 = "Non rejection DSA+", logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox" )
+top.abmr_vs_dsa <- rownames(Bcell.abmr_vs_dsa %>% 
+                      dplyr::filter(p_val_adj < 0.05) %>%
+                      dplyr::arrange(p_val_adj) %>%
+                      head(20))
+DoHeatmap(abmr_vs_dsa, features = top.abmr_vs_dsa, group.by = "Disease_Type") +
+  scale_fill_gradientn(colors = c("navy", "white", "firebrick3"))
+
+#### TCMR vs DSA
+tcmr_vs_dsa <- subset(B_cells, subset = Disease_Type %in% c("T cell-mediated rejection", "Non rejection DSA+"))
+
+Bcell.tcmr_vs_dsa= FindMarkers(tcmr_vs_dsa, ident.1 = "T cell-mediated rejection", ident.2 = "Non rejection DSA+", logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox" )
+top.tcmr_vs_dsa <- rownames(Bcell.tcmr_vs_dsa %>% 
+                      dplyr::filter(p_val_adj < 0.05) %>%
+                      dplyr::arrange(p_val_adj) %>%
+                      head(30))
+DoHeatmap(tcmr_vs_dsa, features = top.tcmr_vs_dsa, group.by = "Disease_Type") +
+  scale_fill_gradientn(colors = c("navy", "white", "firebrick3"))
+
+
+### ABMR vs TCMR
+tcmr_vs_abmr <- subset(B_cells, subset = Disease_Type %in% c("T cell-mediated rejection", "Antibody-mediated rejection"))
+
+Bcell.tcmr_vs_abmr= FindMarkers(tcmr_vs_abmr, ident.1 = "T cell-mediated rejection", ident.2 = "Antibody-mediated rejection", logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox" )
+top.tcmr_vs_abmr <- rownames(Bcell.tcmr_vs_abmr %>% 
+                      dplyr::filter(p_val_adj < 0.05) %>%
+                      dplyr::arrange(p_val_adj) %>%
+                      head(30))
+
+similar_genes <- rownames(Bcell.tcmr_vs_abmr[abs(Bcell.tcmr_vs_abmr$avg_log2FC) < 0.25 & Bcell.tcmr_vs_abmr$p_val_adj >= 0.05, ])
+DoHeatmap(tcmr_vs_abmr, features = top.tcmr_vs_abmr, group.by = "Disease_Type") +
+  scale_fill_gradientn(colors = c("navy", "white", "firebrick3"))
+```
+
+```{r}
+# Subset to only the 3 groups of interest
+subset_3 <- subset(B_cells, subset = Disease_Type %in% c("T cell-mediated rejection", "Antibody-mediated rejection", "Non rejection DSA+"))
+
+# Set identity to Disease_Type
+Idents(subset_3) <- subset_3$Disease_Type
+
+# DEG: TCMR vs DSA+
+deg_tcmr_vs_dsa <- FindMarkers(subset_3, ident.1 = "T cell-mediated rejection", ident.2 = "Non rejection DSA+",
+                               logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox")
+
+# DEG: ABMR vs DSA+
+deg_abmr_vs_dsa <- FindMarkers(subset_3, ident.1 = "Antibody-mediated rejection", ident.2 = "Non rejection DSA+",
+                               logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox")
+
+# Find shared upregulated genes (both have +logFC and adj p < 0.05)
+shared_up_genes <- intersect(
+  rownames(deg_tcmr_vs_dsa[deg_tcmr_vs_dsa$avg_log2FC > 0 & deg_tcmr_vs_dsa$p_val_adj < 0.05, ]),
+  rownames(deg_abmr_vs_dsa[deg_abmr_vs_dsa$avg_log2FC > 0 & deg_abmr_vs_dsa$p_val_adj < 0.05, ])
+)
+
+```

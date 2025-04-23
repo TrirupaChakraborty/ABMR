@@ -1,0 +1,83 @@
+---
+title: "nasens_scRNA.rmd"
+output: html_document
+date: "2025-03-27"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(spatstat.explore)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(harmony)
+library(tidyverse)
+
+setwd("/ix/djishnu/Trirupa/ABomics.Prj/SigmiR/inputs/")
+```
+
+```{r}
+#Read DGE file
+rej.data <- read.table(file = gzfile("GSE109564_Kidney.biopsy.dge.txt.gz"), 
+                        header = TRUE, 
+                        row.names = 1, 
+                        sep = "\t" 
+                        )
+rej_obj <- CreateSeuratObject(counts = rej.data, project = "GSE109564", min.cells = 50, min.features = 200)
+
+ctrl.data <- read.table(file = gzfile("GSE114156_Human.kidney.dge.txt.gz"), 
+                       header = TRUE, 
+                       row.names = 1, 
+                       sep = "\t" 
+)
+ctrl_obj <- CreateSeuratObject(counts = ctrl.data, project = "GSE114156", min.cells = 50, min.features = 200)
+```
+
+```{r}
+seurat_obj= rej_obj
+# QC and filtering (optional, but useful)
+rej_obj[["percent.mt"]] <- PercentageFeatureSet(rej_obj, pattern = "^MT-")
+
+# View QC metrics
+VlnPlot(rej_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# Filter cells based on QC
+rej_obj <- subset(rej_obj, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10)
+
+# Normalize
+rej_obj <- NormalizeData(rej_obj)
+
+# Find variable features
+rej_obj <- FindVariableFeatures(rej_obj, selection.method = "vst", nfeatures = 2000)
+
+# Scale data
+rej_obj <- ScaleData(rej_obj)
+
+# PCA
+rej_obj <- RunPCA(rej_obj, features = VariableFeatures(object = rej_obj))
+
+```
+
+```{r}
+# QC and filtering (optional, but useful)
+seurat_obj_ctrl= ctrl_obj
+ctrl_obj[["percent.mt"]] <- PercentageFeatureSet(ctrl_obj, pattern = "^MT-")
+# View QC metrics
+VlnPlot(ctrl_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+# Filter cells based on QC
+ctrl_obj <- subset(ctrl_obj, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10)
+# Normalize
+ctrl_obj <- NormalizeData(ctrl_obj)
+# Find variable features
+ctrl_obj <- FindVariableFeatures(ctrl_obj, selection.method = "vst", nfeatures = 2000)
+# Scale data
+ctrl_obj <- ScaleData(ctrl_obj)
+# PCA
+ctrl_obj <- RunPCA(ctrl_obj, features = VariableFeatures(object = ctrl_obj))
+```
+
+```{r}
+
+```
